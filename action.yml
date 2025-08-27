@@ -1,0 +1,118 @@
+name: "Setup FRPC Visitor"
+description: "Download and run frpc with a provided TOML config (visitor), wait for readiness, and expose the bindPort."
+author: "wangsijie"
+
+inputs:
+  frpc_config:
+    description: "Full frpc TOML configuration (visitor). Pass from a secret."
+    required: true
+  frp_version:
+    description: "frp release version to download (e.g. 0.64.0)"
+    required: false
+    default: "0.64.0"
+  config_path:
+    description: "Path to write the TOML config"
+    required: false
+    default: "visitor.toml"
+  ready_host:
+    description: "Host to probe for readiness"
+    required: false
+    default: "127.0.0.1"
+  ready_port:
+    description: "Port to probe; if omitted, parsed from config bindPort"
+    required: false
+    default: ""
+  retries:
+    description: "Number of readiness checks"
+    required: false
+    default: "20"
+  delay_seconds:
+    description: "Delay between readiness checks"
+    required: false
+    default: "1"
+
+outputs:
+  bind_port:
+    description: "The local bindPort parsed from config or provided input"
+    value: ${{ steps.detect.outputs.bind_port }}
+  config_path:
+    description: "Path to the written TOML config"
+    value: ${{ steps.write.outputs.config_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: write
+      name: Write frpc config
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf "%s" "${{ inputs.frpc_config }}" > "${{ inputs.config_path }}"
+        echo "config_path=${{ inputs.config_path }}" >> "$GITHUB_OUTPUT"
+
+    - id: download
+      name: Download frpc
+      shell: bash
+      run: |
+        set -euxo pipefail
+        uname_m=$(uname -m)
+        case "$uname_m" in
+          x86_64)  frp_arch="amd64" ;;
+          aarch64) frp_arch="arm64" ;;
+          arm64)   frp_arch="arm64" ;;
+          *) echo "Unsupported arch: $uname_m"; exit 1 ;;
+        esac
+        ver=${{ inputs.frp_version }}
+        url="https://github.com/fatedier/frp/releases/download/v${ver}/frp_${ver}_linux_${frp_arch}.tar.gz"
+        curl -L "$url" -o frp.tgz
+        tar xzf frp.tgz
+        dir=$(tar tzf frp.tgz | head -1 | cut -f1 -d/)
+        mv "$dir/frpc" ./frpc
+        chmod +x ./frpc
+
+    - id: detect
+      name: Determine bind port
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${{ inputs.ready_port }}" ]]; then
+          port="${{ inputs.ready_port }}"
+        else
+          port=$(awk -F= 'tolower($1) ~ /bindport/ {gsub(/ /, "", $2); gsub(/\r/, "", $2); print $2; exit}' "${{ inputs.config_path }}")
+        fi
+        if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+          echo "Could not determine a numeric bindPort (got: '$port')" >&2
+          exit 1
+        fi
+        echo "bind_port=$port" >> "$GITHUB_OUTPUT"
+
+    - id: start
+      name: Start frpc visitor
+      shell: bash
+      run: |
+        set -euo pipefail
+        nohup ./frpc -c "${{ inputs.config_path }}" > frpc.log 2>&1 &
+
+    - id: wait
+      name: Wait for readiness
+      shell: bash
+      run: |
+        set -euo pipefail
+        host="${{ inputs.ready_host }}"
+        port="${{ steps.detect.outputs.bind_port }}"
+        retries=${{ inputs.retries }}
+        delay=${{ inputs.delay_seconds }}
+        for i in $(seq 1 "$retries"); do
+          if nc -z "$host" "$port"; then
+            echo "frpc visitor ready on $host:$port"
+            exit 0
+          fi
+          sleep "$delay"
+        done
+        echo "frpc visitor did not become ready" >&2
+        tail -n +1 frpc.log || true
+        exit 1
+
+branding:
+  icon: "repeat"
+  color: "blue"
