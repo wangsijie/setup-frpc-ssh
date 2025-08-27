@@ -47,7 +47,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        printf "%s" "${{ inputs.frpc_config }}" > "${{ inputs.config_path }}"
+        # Use a single-quoted heredoc to write the config verbatim,
+        # matching the behavior of the previously working manual flow.
+        cat > "${{ inputs.config_path }}" <<'FRPC_CFG'
+        ${{ inputs.frpc_config }}
+        FRPC_CFG
         echo "config_path=${{ inputs.config_path }}" >> "$GITHUB_OUTPUT"
 
     - id: download
