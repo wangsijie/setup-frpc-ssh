@@ -66,7 +66,8 @@ runs:
         url="https://github.com/fatedier/frp/releases/download/v${ver}/frp_${ver}_linux_${frp_arch}.tar.gz"
         curl -L "$url" -o frp.tgz
         tar xzf frp.tgz
-        dir=$(tar tzf frp.tgz | head -1 | cut -f1 -d/)
+        # Avoid broken pipe from `head` under pipefail by consuming full stream
+        dir=$(tar tzf frp.tgz | awk -F/ 'NR==1{d=$1} END{print d}')
         mv "$dir/frpc" ./frpc
         chmod +x ./frpc
 
